@@ -24,12 +24,17 @@ export class ElitzeAgent {
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
         const memories = await this.memory.search(task.objective, 8);
-        const request = this.buildRequest(task, memories.map(memory => ({
-          id: memory.id,
-          source: memory.source,
-          confidence: memory.confidence,
-          text: memory.text,
-        })), judgeResult);
+        const request = this.buildRequest(
+          task,
+          memories.map(memory => ({
+            id: memory.id,
+            source: memory.source,
+            confidence: memory.confidence,
+            text: memory.text,
+          })),
+          lastAnswer,
+          judgeResult,
+        );
 
         const response = await this.router.generate(task, request);
         lastModel = response;
@@ -85,6 +90,7 @@ export class ElitzeAgent {
   private buildRequest(
     task: AgentTask,
     memories: Array<{ id: string; source: string; confidence: number | null; text: string }>,
+    previousAnswer: string,
     previousJudge?: JudgeResult,
   ) {
     const repairs = previousJudge?.requiredRepairs ?? [];
@@ -105,16 +111,12 @@ export class ElitzeAgent {
         tools: task.tools ?? [],
         metadata: task.metadata ?? {},
         memory: memories,
-        previousAttempt: lastAnswerForPrompt(),
+        previousAttempt: previousAnswer || undefined,
         judgeRepairs: repairs,
       }),
       temperature: 0.2,
       maxTokens: 6000,
     };
-
-    function lastAnswerForPrompt(): undefined {
-      return undefined;
-    }
   }
 
   private validateTask(task: AgentTask): void {
