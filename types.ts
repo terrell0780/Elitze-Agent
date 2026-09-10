@@ -1,10 +1,14 @@
+export type AgentRisk = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+
 export type AgentTask = {
   id: string;
   objective: string;
   context?: string;
-  risk?: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  risk?: AgentRisk;
   expectedOutput?: string;
   tools?: string[];
+  maxAttempts?: number;
+  metadata?: Record<string, string>;
 };
 
 export type ModelRequest = {
@@ -13,6 +17,13 @@ export type ModelRequest = {
   model?: string;
   temperature?: number;
   maxTokens?: number;
+  tools?: ModelToolDefinition[];
+};
+
+export type ModelToolDefinition = {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
 };
 
 export type ModelResponse = {
@@ -20,6 +31,11 @@ export type ModelResponse = {
   model: string;
   provider: string;
   latencyMs: number;
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+  };
 };
 
 export interface ModelAdapter {
