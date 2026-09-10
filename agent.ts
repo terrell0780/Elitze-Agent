@@ -1,7 +1,9 @@
 import { ElitzeFrontierJudge } from './judge.js';
 import { LocalMemoryStore, type MemoryStore } from './memory.js';
 import { ElitzeModelRouter } from './router.js';
-import type { AgentResult, AgentTask } from './types.js';
+import type { AgentResult, AgentTask, JudgeResult, ModelResponse } from './types.js';
+
+const MAX_ATTEMPTS = 3;
 
 export class ElitzeAgent {
   constructor(
@@ -11,55 +13,115 @@ export class ElitzeAgent {
   ) {}
 
   async run(task: AgentTask): Promise<AgentResult> {
+    this.validateTask(task);
+
+    const maxAttempts = Math.max(1, Math.min(10, task.maxAttempts ?? MAX_ATTEMPTS));
     let lastAnswer = '';
-    let lastModel;
-    let judgeResult;
+    let lastModel: ModelResponse | undefined;
+    let judgeResult: JudgeResult | undefined;
+    let lastError: unknown;
 
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      const memories = await this.memory.search(task.objective);
-      const model = this.router.select(task);
-      const response = await model.generate({
-        system: `You are ELITZE, a rigorous autonomous agent. Work toward the objective, distinguish facts from assumptions, preserve uncertainty, and never claim an action or verification you did not perform. Use the supplied memory only as contextual evidence, not unquestioned truth. Objective: ${task.objective}`,
-        user: JSON.stringify({
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const memories = await this.memory.search(task.objective, 8);
+        const request = this.buildRequest(task, memories.map(memory => ({
+          id: memory.id,
+          source: memory.source,
+          confidence: memory.confidence,
+          text: memory.text,
+        })), judgeResult);
+
+        const response = await this.router.generate(task, request);
+        lastModel = response;
+        lastAnswer = response.text;
+
+        judgeResult = await this.judge.evaluate({
           objective: task.objective,
-          context: task.context ?? '',
-          risk: task.risk ?? 'MEDIUM',
-          expectedOutput: task.expectedOutput ?? '',
-          tools: task.tools ?? [],
-          memory: memories,
-          previousAttempt: attempt > 1 ? lastAnswer : undefined,
-          judgeRepairs: judgeResult?.requiredRepairs ?? [],
-        }),
-        temperature: 0.2,
-        maxTokens: 6000,
-      });
+          context: task.context,
+          answer: lastAnswer,
+          risk: task.risk,
+        });
 
-      lastAnswer = response.text;
-      lastModel = response;
-      judgeResult = await this.judge.evaluate({ objective: task.objective, context: task.context, answer: lastAnswer, risk: task.risk });
+        await this.memory.put({
+          id: `${task.id}:${attempt}`,
+          taskId: task.id,
+          text: `Objective: ${task.objective}\nAnswer: ${lastAnswer}\nJudge decision: ${judgeResult.decision}\nJudge score: ${judgeResult.score}`,
+          source: `ELITZE:${response.provider}:${response.model}`,
+          confidence: judgeResult.score / 100,
+          createdAt: new Date().toISOString(),
+        });
 
-      await this.memory.put({
-        id: `${task.id}:${attempt}`,
-        taskId: task.id,
-        text: `Objective: ${task.objective}\nAnswer: ${lastAnswer}\nJudge: ${JSON.stringify(judgeResult)}`,
-        source: `ELITZE:${response.provider}:${response.model}`,
-        confidence: judgeResult.score / 100,
-        createdAt: new Date().toISOString(),
-      });
-
-      if (judgeResult.decision === 'PASS') {
-        return { taskId: task.id, answer: lastAnswer, model: response, judge: judgeResult, attempts: attempt, status: 'COMPLETED' };
+        if (judgeResult.decision === 'PASS') {
+          return {
+            taskId: task.id,
+            answer: lastAnswer,
+            model: response,
+            judge: judgeResult,
+            attempts: attempt,
+            status: 'COMPLETED',
+          };
+        }
+      } catch (error) {
+        lastError = error;
       }
     }
 
-    if (!lastModel || !judgeResult) throw new Error('ELITZE produced no evaluated result.');
+    if (!lastModel || !judgeResult) {
+      throw new Error(
+        `ELITZE produced no evaluated result: ${lastError instanceof Error ? lastError.message : String(lastError ?? 'unknown error')}`,
+      );
+    }
+
     return {
       taskId: task.id,
       answer: lastAnswer,
       model: lastModel,
       judge: judgeResult,
-      attempts: 3,
+      attempts: maxAttempts,
       status: judgeResult.decision === 'REVIEW' ? 'REVIEW' : 'FAILED',
     };
+  }
+
+  private buildRequest(
+    task: AgentTask,
+    memories: Array<{ id: string; source: string; confidence: number | null; text: string }>,
+    previousJudge?: JudgeResult,
+  ) {
+    const repairs = previousJudge?.requiredRepairs ?? [];
+    return {
+      system: [
+        'You are ELITZE, an autonomous general-purpose agent.',
+        'Work toward the stated objective using only available capabilities.',
+        'Separate verified facts from assumptions.',
+        'Never claim an external action, tool execution, access, browsing result, or verification unless it actually occurred.',
+        'Treat memory as contextual evidence, not authoritative truth.',
+        'When evidence is insufficient, say so explicitly.',
+      ].join(' '),
+      user: JSON.stringify({
+        objective: task.objective,
+        context: task.context ?? '',
+        risk: task.risk ?? 'MEDIUM',
+        expectedOutput: task.expectedOutput ?? '',
+        tools: task.tools ?? [],
+        metadata: task.metadata ?? {},
+        memory: memories,
+        previousAttempt: lastAnswerForPrompt(),
+        judgeRepairs: repairs,
+      }),
+      temperature: 0.2,
+      maxTokens: 6000,
+    };
+
+    function lastAnswerForPrompt(): undefined {
+      return undefined;
+    }
+  }
+
+  private validateTask(task: AgentTask): void {
+    if (!task.id?.trim()) throw new Error('Agent task id is required.');
+    if (!task.objective?.trim()) throw new Error('Agent task objective is required.');
+    if (task.maxAttempts !== undefined && (!Number.isInteger(task.maxAttempts) || task.maxAttempts < 1)) {
+      throw new Error('Agent task maxAttempts must be a positive integer.');
+    }
   }
 }
