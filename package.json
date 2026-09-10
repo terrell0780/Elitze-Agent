@@ -10,7 +10,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test"
+    "test": "npm run build && node --test tests/*.test.mjs"
   },
   "dependencies": {
     "@langchain/core": "^1.2.10",
