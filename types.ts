@@ -23,7 +23,7 @@ export type ModelRequest = {
 export type ModelToolDefinition = {
   name: string;
   description: string;
-  inputSchema: Record<string, unknown>;
+  parameters: Record<string, unknown>;
 };
 
 export type ModelResponse = {
